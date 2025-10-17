@@ -174,4 +174,4 @@ if st.button("🤖 Auto-Erkennung"):
     # Hintergrundmaske
     if st.session_state.bg_hsv:
         bhmin,bhmax,bsmin,bsmax,bvmin,bvmax = st.session_state.bg_hsv
-        bg_mask = apply_hue_wrap(hsv_proc, bhmin,bhmax,bs
+        bg_mask = apply_hue_wrap(hsv_proc, bhmin,bhmax,bsmin, bsmax, bvmin, bvmax)
