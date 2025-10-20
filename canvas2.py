@@ -1,4 +1,4 @@
-# canvas_stable.py
+# canvas_robust.py
 import streamlit as st
 import cv2
 import numpy as np
@@ -22,38 +22,39 @@ def get_centers(mask, min_area=50):
                 centers.append((cx,cy))
     return centers
 
-def compute_hsv_range(points, hsv_img, buffer_h=8, buffer_s=30, buffer_v=25):
+def compute_hsv_stats(points, hsv_img, buffer=10):
     if not points:
         return None
     vals = np.array([hsv_img[y,x] for (x,y) in points])
-    h = vals[:,0].astype(int)
-    s = vals[:,1].astype(int)
-    v = vals[:,2].astype(int)
-    h_min = max(0, np.min(h)-buffer_h)
-    h_max = min(180, np.max(h)+buffer_h)
-    s_min = max(0, np.min(s)-buffer_s)
-    s_max = min(255, np.max(s)+buffer_s)
-    v_min = max(0, np.min(v)-buffer_v)
-    v_max = min(255, np.max(v)+buffer_v)
+    h_mean = int(np.mean(vals[:,0]))
+    s_mean = int(np.mean(vals[:,1]))
+    v_mean = int(np.mean(vals[:,2]))
+    h_std = int(np.std(vals[:,0])) + buffer
+    s_std = int(np.std(vals[:,1])) + buffer
+    v_std = int(np.std(vals[:,2])) + buffer
+    h_min, h_max = max(0,h_mean-h_std), min(180,h_mean+h_std)
+    s_min, s_max = max(0,s_mean-s_std), min(255,s_mean+s_std)
+    v_min, v_max = max(0,v_mean-v_std), min(255,v_mean+v_std)
     return (h_min,h_max,s_min,s_max,v_min,v_max)
 
 def apply_hue_wrap(hsv_img, hmin,hmax,smin,smax,vmin,vmax):
     if hmin <= hmax:
         mask = cv2.inRange(hsv_img, np.array([hmin,smin,vmin]), np.array([hmax,smax,vmax]))
-    else:  # wrap-around hue
+    else:
         mask_lo = cv2.inRange(hsv_img, np.array([0,smin,vmin]), np.array([hmax,smax,vmax]))
         mask_hi = cv2.inRange(hsv_img, np.array([hmin,smin,vmin]), np.array([180,smax,vmax]))
         mask = cv2.bitwise_or(mask_lo,mask_hi)
     return mask
 
 # -------------------- Streamlit Setup --------------------
-st.set_page_config(page_title="Zellkern-Zähler Stabil", layout="wide")
-st.title("🧬 Zellkern-Zähler – Stabil & Geisterpunktefrei")
+st.set_page_config(page_title="Zellkern-Zähler Robust", layout="wide")
+st.title("🧬 Zellkern-Zähler – Robust & Stabil")
 
 # -------------------- Session State --------------------
-keys = ["aec_points","hema_points","manual_aec","manual_hema","aec_hsv","hema_hsv","last_file"]
+keys = ["aec_points","hema_points","manual_aec","manual_hema",
+        "aec_hsv","hema_hsv","bg_points","last_file","run_auto"]
 for key in keys:
-    if key not in st.session_state or st.session_state[key] is None:
+    if key not in st.session_state:
         st.session_state[key] = [] if "points" in key or "manual" in key else None
 
 # -------------------- File Upload --------------------
@@ -62,7 +63,7 @@ if not uploaded_file:
     st.stop()
 
 if uploaded_file.name != st.session_state.last_file:
-    for k in ["aec_points","hema_points","manual_aec","manual_hema","aec_hsv","hema_hsv"]:
+    for k in ["aec_points","hema_points","manual_aec","manual_hema","aec_hsv","hema_hsv","bg_points"]:
         st.session_state[k] = [] if "points" in k or "manual" in k else None
     st.session_state.last_file = uploaded_file.name
 
@@ -74,17 +75,19 @@ scale = DISPLAY_WIDTH / W_orig
 image_disp = cv2.resize(image_orig, (DISPLAY_WIDTH, int(H_orig*scale)), interpolation=cv2.INTER_AREA)
 hsv_orig = cv2.cvtColor(image_orig, cv2.COLOR_RGB2HSV)
 
-# -------------------- Panel: Modus & Aktionen --------------------
+# -------------------- Sidebar: Modus & Aktionen --------------------
 with st.sidebar:
     st.markdown("### Modus")
-    mode = st.radio("Punkt setzen:", ["AEC Kalibrierung","Hämatoxylin Kalibrierung","Manuell AEC","Manuell Hämatoxylin","Löschen"])
+    mode = st.radio("Punkt setzen:", ["AEC Kalibrierung","Hämatoxylin Kalibrierung",
+                                     "Manuell AEC","Manuell Hämatoxylin","Hintergrund","Löschen"])
     st.markdown("### Aktionen")
     if st.button("Alle Punkte löschen"):
-        for k in ["aec_points","hema_points","manual_aec","manual_hema"]:
+        for k in ["aec_points","hema_points","manual_aec","manual_hema","bg_points"]:
             st.session_state[k] = []
     if st.button("Kalibrierung berechnen"):
-        st.session_state.aec_hsv = compute_hsv_range(st.session_state.aec_points, hsv_orig)
-        st.session_state.hema_hsv = compute_hsv_range(st.session_state.hema_points, hsv_orig)
+        st.session_state.aec_hsv = compute_hsv_stats(st.session_state.aec_points, hsv_orig)
+        st.session_state.hema_hsv = compute_hsv_stats(st.session_state.hema_points, hsv_orig)
+        st.success("Kalibrierung gespeichert.")
     if st.button("Auto-Erkennung"):
         st.session_state.run_auto = True
 
@@ -97,7 +100,8 @@ for pts, color in [
     (st.session_state.aec_points,(255,0,0)),
     (st.session_state.hema_points,(0,0,255)),
     (st.session_state.manual_aec,(255,165,0)),
-    (st.session_state.manual_hema,(128,0,128))
+    (st.session_state.manual_hema,(128,0,128)),
+    (st.session_state.bg_points,(255,255,0))
 ]:
     for (x_orig, y_orig) in pts:
         x_disp, y_disp = int(x_orig*scale), int(y_orig*scale)
@@ -108,7 +112,7 @@ if coords:
     x_disp, y_disp = int(coords["x"]), int(coords["y"])
     x_orig, y_orig = int(x_disp/scale), int(y_disp/scale)
     if mode=="Löschen":
-        for k in ["aec_points","hema_points","manual_aec","manual_hema"]:
+        for k in ["aec_points","hema_points","manual_aec","manual_hema","bg_points"]:
             st.session_state[k] = [p for p in st.session_state[k] if not is_near(p,(x_orig,y_orig),5)]
     elif mode=="AEC Kalibrierung":
         st.session_state.aec_points.append((x_orig,y_orig))
@@ -118,23 +122,35 @@ if coords:
         st.session_state.manual_aec.append((x_orig,y_orig))
     elif mode=="Manuell Hämatoxylin":
         st.session_state.manual_hema.append((x_orig,y_orig))
+    elif mode=="Hintergrund":
+        st.session_state.bg_points.append((x_orig,y_orig))
 
 # -------------------- Auto-Erkennung --------------------
-if 'run_auto' in st.session_state and st.session_state.get('run_auto'):
+if st.session_state.get('run_auto'):
     st.session_state.run_auto = False
-    hsv_proc = cv2.cvtColor(image_orig, cv2.COLOR_RGB2HSV)
+    proc = image_orig.copy()
+    hsv_proc = cv2.cvtColor(proc, cv2.COLOR_RGB2HSV)
+
+    # Hintergrundmittel berechnen
+    bg_mean = [0,0,0]
+    if st.session_state.bg_points:
+        bg_vals = np.array([hsv_proc[y,x] for (x,y) in st.session_state.bg_points])
+        bg_mean = bg_vals.mean(axis=0)
+        hsv_proc[:,:,0] = np.clip(hsv_proc[:,:,0]-bg_mean[0],0,180)
+        hsv_proc[:,:,1] = np.clip(hsv_proc[:,:,1]-bg_mean[1],0,255)
+        hsv_proc[:,:,2] = np.clip(hsv_proc[:,:,2]-bg_mean[2],0,255)
+
     # AEC
     if st.session_state.aec_hsv:
         hmin,hmax,smin,smax,vmin,vmax = st.session_state.aec_hsv
-        if None not in [hmin,hmax,smin,smax,vmin,vmax]:
-            mask = apply_hue_wrap(hsv_proc,hmin,hmax,smin,smax,vmin,vmax)
-            st.session_state.aec_points = get_centers(mask, min_area=50)
+        mask = apply_hue_wrap(hsv_proc,hmin,hmax,smin,smax,vmin,vmax)
+        st.session_state.aec_points = get_centers(mask,min_area=50)
+
     # Hämatoxylin
     if st.session_state.hema_hsv:
         hmin,hmax,smin,smax,vmin,vmax = st.session_state.hema_hsv
-        if None not in [hmin,hmax,smin,smax,vmin,vmax]:
-            mask = apply_hue_wrap(hsv_proc,hmin,hmax,smin,smax,vmin,vmax)
-            st.session_state.hema_points = get_centers(mask, min_area=50)
+        mask = apply_hue_wrap(hsv_proc,hmin,hmax,smin,smax,vmin,vmax)
+        st.session_state.hema_points = get_centers(mask,min_area=50)
 
 # -------------------- Ergebnisse + CSV --------------------
 all_aec = st.session_state.aec_points + st.session_state.manual_aec
