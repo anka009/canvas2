@@ -48,10 +48,9 @@ def compute_hsv_range_circle(points, hsv_img, radius=5, buffer_h=8, buffer_s=30,
     s_max = min(255, np.max(s)+buffer_s)
     v_min = max(0, np.min(v)-buffer_v)
     v_max = min(255, np.max(v)+buffer_v)
-    return (h_min,h_max,s_min,s_max,v_min,vmax)
+    return (h_min,h_max,s_min,s_max,v_min,v_max)
 
 def apply_hue_wrap(hsv_img, hmin,hmax,smin,smax,vmin,vmax):
-    # Fix: cast to uint8 for cv2.inRange
     lower1 = np.array([hmin,smin,vmin], dtype=np.uint8)
     upper1 = np.array([hmax,smax,vmax], dtype=np.uint8)
     lower2 = np.array([0,smin,vmin], dtype=np.uint8)
@@ -184,14 +183,16 @@ if st.session_state.last_auto_run > 0:
         proc = cv2.GaussianBlur(proc,(blur_kernel,blur_kernel),0)
     hsv_proc = cv2.cvtColor(proc, cv2.COLOR_RGB2HSV)
 
-    # Hintergrund subtrahieren
+    # Hintergrund subtrahieren (safe cast)
     if st.session_state.bg_points:
         bg_vals = np.array([hsv_proc[y,x] for (x,y) in st.session_state.bg_points])
         if len(bg_vals) > 0:
             bg_mean = np.mean(bg_vals, axis=0)
+            hsv_proc = hsv_proc.astype(np.int16)
             hsv_proc[:,:,0] = np.clip(hsv_proc[:,:,0]-bg_mean[0], 0, 180)
             hsv_proc[:,:,1] = np.clip(hsv_proc[:,:,1]-bg_mean[1], 0, 255)
             hsv_proc[:,:,2] = np.clip(hsv_proc[:,:,2]-bg_mean[2], 0, 255)
+            hsv_proc = hsv_proc.astype(np.uint8)
 
     if st.session_state.aec_hsv:
         hmin,hmax,smin,smax,vmin,vmax = st.session_state.aec_hsv
