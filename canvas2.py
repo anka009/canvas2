@@ -1,4 +1,4 @@
-# canvas_final.py
+# canvas_final_live.py
 import streamlit as st
 import cv2
 import numpy as np
@@ -11,7 +11,6 @@ def is_near(p1, p2, r=10):
     return np.linalg.norm(np.array(p1) - np.array(p2)) < r
 
 def dedup_points(points, min_dist=5):
-    """Doppelte Punkte innerhalb min_dist entfernen"""
     out = []
     for p in points:
         if all(np.linalg.norm(np.array(p)-np.array(q)) >= min_dist for q in out):
@@ -53,18 +52,18 @@ def compute_hsv_range_circle(points, hsv_img, radius=5, buffer_h=8, buffer_s=30,
 
 # -------------------- Streamlit Setup --------------------
 st.set_page_config(page_title="Zellkern-Zähler", layout="wide")
-st.title("🧬 Zellkern-Zähler – Final Version")
+st.title("🧬 Zellkern-Zähler – Live Overlay Version")
 
 # -------------------- Session State --------------------
 default_keys = ["aec_points","hema_points","bg_points","manual_aec","manual_hema",
                 "aec_hsv","hema_hsv","bg_hsv","last_file","disp_width","last_auto_run"]
 for key in default_keys:
-    if key not in st.session_state:
+    if key not in st.session_state or st.session_state[key] is None:
         if "points" in key or "manual" in key:
             st.session_state[key] = []
-        elif "last_auto_run" in key:
+        elif key=="last_auto_run":
             st.session_state[key] = 0
-        elif "disp_width" in key:
+        elif key=="disp_width":
             st.session_state[key] = 1400
         else:
             st.session_state[key] = None
@@ -131,17 +130,20 @@ with col4:
 
 # -------------------- Bildanzeige + Klicklogik --------------------
 marked_disp = image_disp.copy()
-for points_list, color in [
-    (st.session_state.aec_points,(255,0,0)),
-    (st.session_state.hema_points,(0,0,255)),
-    (st.session_state.manual_aec,(255,165,0)),
-    (st.session_state.manual_hema,(128,0,128)),
-    (st.session_state.bg_points,(255,255,0)),
+for points_list, color, label in [
+    (st.session_state.aec_points,(255,0,0),"R"),
+    (st.session_state.hema_points,(0,0,255),"B"),
+    (st.session_state.manual_aec,(255,165,0),"RA"),
+    (st.session_state.manual_hema,(128,0,128),"HB"),
+    (st.session_state.bg_points,(255,255,0),"BG"),
 ]:
-    for (x,y) in points_list:
-        cv2.circle(marked_disp,(x,y),circle_radius,color,-1)
+    for idx,(x,y) in enumerate(points_list):
+        cv2.circle(marked_disp,(x,y),circle_radius,color,2)
+        cv2.putText(marked_disp,str(idx+1),(x+circle_radius,y-circle_radius),
+                    cv2.FONT_HERSHEY_SIMPLEX,0.4,(255,255,255),1,cv2.LINE_AA)
 
-coords = streamlit_image_coordinates(Image.fromarray(marked_disp), key=f"clickable_image_{st.session_state.last_auto_run}", width=DISPLAY_WIDTH)
+coords = streamlit_image_coordinates(Image.fromarray(marked_disp),
+                                     key=f"clickable_image_{st.session_state.last_auto_run}", width=DISPLAY_WIDTH)
 
 if coords:
     x, y = int(coords["x"]), int(coords["y"])
@@ -177,7 +179,6 @@ if st.session_state.last_auto_run > 0:
             g = np.clip(g - bg_mean[1], 0, 255)
             b = np.clip(b - bg_mean[2], 0, 255)
 
-    # Masken erstellen
     if st.session_state.aec_hsv:
         vmin,vmax = st.session_state.aec_hsv[4], st.session_state.aec_hsv[5]
         mask_aec = cv2.inRange(r, vmin, vmax)
@@ -190,12 +191,12 @@ if st.session_state.last_auto_run > 0:
 
     st.session_state.last_auto_run = 0
 
-# -------------------- Gesamtzählung --------------------
-all_aec = (st.session_state.aec_points or []) + (st.session_state.manual_aec or [])
-all_hema = (st.session_state.hema_points or []) + (st.session_state.manual_hema or [])
-st.markdown(f"### 🔢 Gesamt: AEC={len(all_aec)}, Hämatoxylin={len(all_hema)}")
+# -------------------- Gesamtzählung + CSV --------------------
+all_aec = st.session_state.aec_points + st.session_state.manual_aec
+all_hema = st.session_state.hema_points + st.session_state.manual_hema
 
-# -------------------- CSV Export --------------------
+st.markdown(f"### 🔢 Gesamtpunkte: AEC={len(all_aec)}, Hämatoxylin={len(all_hema)}")
+
 df_list = []
 for (x,y) in all_aec: df_list.append({"X_display":x,"Y_display":y,"Type":"AEC"})
 for (x,y) in all_hema: df_list.append({"X_display":x,"Y_display":y,"Type":"Hämatoxylin"})
