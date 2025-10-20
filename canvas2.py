@@ -1,4 +1,4 @@
-# canvas_final_stable.py
+# canvas_final_auto.py
 import streamlit as st
 import cv2
 import numpy as np
@@ -57,7 +57,6 @@ def apply_hue_wrap(hsv_img, hmin,hmax,smin,smax,vmin,vmax):
     upper2 = np.array([hmax,smax,vmax], dtype=np.uint8)
     lower_hi = np.array([hmin,smin,vmin], dtype=np.uint8)
     upper_hi = np.array([180,smax,vmax], dtype=np.uint8)
-
     if hmin <= hmax:
         mask = cv2.inRange(hsv_img, lower1, upper1)
     else:
@@ -68,7 +67,7 @@ def apply_hue_wrap(hsv_img, hmin,hmax,smin,smax,vmin,vmax):
 
 # -------------------- Streamlit Setup --------------------
 st.set_page_config(page_title="Zellkern-Zähler", layout="wide")
-st.title("🧬 Zellkern-Zähler – Stable Arbeits-Panel")
+st.title("🧬 Zellkern-Zähler – Auto-Erkennung + Manuelle Korrektur")
 
 # -------------------- Session State --------------------
 keys = ["aec_points","hema_points","bg_points","manual_aec","manual_hema",
@@ -99,7 +98,6 @@ if uploaded_file.name != st.session_state.last_file:
 # -------------------- Bild vorbereiten --------------------
 DISPLAY_WIDTH = st.slider("📐 Bildbreite", 400, 2000, st.session_state.disp_width, step=100)
 st.session_state.disp_width = DISPLAY_WIDTH
-
 image_orig = np.array(Image.open(uploaded_file).convert("RGB"))
 H_orig, W_orig = image_orig.shape[:2]
 scale = DISPLAY_WIDTH / W_orig
@@ -116,14 +114,12 @@ with st.sidebar:
                      "Manuell AEC",
                      "Manuell Hämatoxylin",
                      "Löschen"], key="mode_select")
-
     st.markdown("### ⚙️ Parameter")
     blur_kernel = st.slider("🔧 Blur (ungerade)", 1, 21, 5, step=2)
     min_area = st.number_input("📏 Mindestfläche", 10, 2000, 100)
     alpha = st.slider("🌗 Alpha (Kontrast)", 0.1, 3.0, 1.0, step=0.1)
     circle_radius = st.slider("⚪ Kreisradius", 3, 20, 8)
     line_thickness = st.slider("📏 Linienstärke", 1, 5, 2)
-
     st.markdown("### ⚡ Aktionen")
     if st.button("🧹 Alle Punkte löschen"):
         for k in ["aec_points","hema_points","bg_points","manual_aec","manual_hema"]:
@@ -183,7 +179,11 @@ if st.session_state.last_auto_run > 0:
         proc = cv2.GaussianBlur(proc,(blur_kernel,blur_kernel),0)
     hsv_proc = cv2.cvtColor(proc, cv2.COLOR_RGB2HSV)
 
-    # Hintergrund subtrahieren (safe cast)
+    # CLAHE auf V-Kanal
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    hsv_proc[:,:,2] = clahe.apply(hsv_proc[:,:,2])
+
+    # Hintergrundsubtraktion
     if st.session_state.bg_points:
         bg_vals = np.array([hsv_proc[y,x] for (x,y) in st.session_state.bg_points])
         if len(bg_vals) > 0:
@@ -194,19 +194,25 @@ if st.session_state.last_auto_run > 0:
             hsv_proc[:,:,2] = np.clip(hsv_proc[:,:,2]-bg_mean[2], 0, 255)
             hsv_proc = hsv_proc.astype(np.uint8)
 
+    # AEC
     if st.session_state.aec_hsv:
         hmin,hmax,smin,smax,vmin,vmax = st.session_state.aec_hsv
         mask_aec = apply_hue_wrap(hsv_proc,hmin,hmax,smin,smax,vmin,vmax)
+        mask_v = cv2.inRange(hsv_proc[:,:,2], vmin, vmax)
+        mask_aec = cv2.bitwise_and(mask_aec, mask_v)
         st.session_state.aec_points = get_centers(mask_aec,min_area)
+
+    # Hämatoxylin
     if st.session_state.hema_hsv:
         hmin,hmax,smin,smax,vmin,vmax = st.session_state.hema_hsv
         mask_hema = apply_hue_wrap(hsv_proc,hmin,hmax,smin,smax,vmin,vmax)
+        mask_v = cv2.inRange(hsv_proc[:,:,2], vmin, vmax)
+        mask_hema = cv2.bitwise_and(mask_hema, mask_v)
         st.session_state.hema_points = get_centers(mask_hema,min_area)
 
 # -------------------- Ergebnisse + CSV --------------------
 all_aec = (st.session_state.aec_points or []) + (st.session_state.manual_aec or [])
 all_hema = (st.session_state.hema_points or []) + (st.session_state.manual_hema or [])
-
 st.markdown(f"### 🔢 Gesamt: AEC={len(all_aec)}, Hämatoxylin={len(all_hema)}")
 
 df_list = []
