@@ -1,4 +1,4 @@
-# canvas_final_panel.py
+# canvas_final_stable.py
 import streamlit as st
 import cv2
 import numpy as np
@@ -48,20 +48,28 @@ def compute_hsv_range_circle(points, hsv_img, radius=5, buffer_h=8, buffer_s=30,
     s_max = min(255, np.max(s)+buffer_s)
     v_min = max(0, np.min(v)-buffer_v)
     v_max = min(255, np.max(v)+buffer_v)
-    return (h_min,h_max,s_min,s_max,v_min,v_max)
+    return (h_min,h_max,s_min,s_max,v_min,vmax)
 
 def apply_hue_wrap(hsv_img, hmin,hmax,smin,smax,vmin,vmax):
+    # Fix: cast to uint8 for cv2.inRange
+    lower1 = np.array([hmin,smin,vmin], dtype=np.uint8)
+    upper1 = np.array([hmax,smax,vmax], dtype=np.uint8)
+    lower2 = np.array([0,smin,vmin], dtype=np.uint8)
+    upper2 = np.array([hmax,smax,vmax], dtype=np.uint8)
+    lower_hi = np.array([hmin,smin,vmin], dtype=np.uint8)
+    upper_hi = np.array([180,smax,vmax], dtype=np.uint8)
+
     if hmin <= hmax:
-        mask = cv2.inRange(hsv_img, np.array([hmin,smin,vmin]), np.array([hmax,smax,vmax]))
+        mask = cv2.inRange(hsv_img, lower1, upper1)
     else:
-        mask_lo = cv2.inRange(hsv_img, np.array([0,smin,vmin]), np.array([hmax,smax,vmax]))
-        mask_hi = cv2.inRange(hsv_img, np.array([hmin,smin,vmin]), np.array([180,smax,vmax]))
+        mask_lo = cv2.inRange(hsv_img, lower2, upper2)
+        mask_hi = cv2.inRange(hsv_img, lower_hi, upper_hi)
         mask = cv2.bitwise_or(mask_lo, mask_hi)
     return mask
 
 # -------------------- Streamlit Setup --------------------
 st.set_page_config(page_title="Zellkern-Zähler", layout="wide")
-st.title("🧬 Zellkern-Zähler – Arbeits-Panel Stable")
+st.title("🧬 Zellkern-Zähler – Stable Arbeits-Panel")
 
 # -------------------- Session State --------------------
 keys = ["aec_points","hema_points","bg_points","manual_aec","manual_hema",
@@ -99,7 +107,7 @@ scale = DISPLAY_WIDTH / W_orig
 image_disp = cv2.resize(image_orig, (DISPLAY_WIDTH, int(H_orig*scale)), interpolation=cv2.INTER_AREA)
 hsv_disp = cv2.cvtColor(image_disp, cv2.COLOR_RGB2HSV)
 
-# -------------------- Arbeits-Panel Sidebar --------------------
+# -------------------- Sidebar: Arbeits-Panel --------------------
 with st.sidebar:
     st.markdown("### 🎨 Markierungsmodus")
     mode = st.radio("Wähle Modus",
@@ -137,17 +145,15 @@ with st.sidebar:
 
 # -------------------- Bildanzeige + Klicklogik --------------------
 marked_disp = image_disp.copy()
-for points_list, color, label in [
-    (st.session_state.aec_points,(255,0,0),"R"),
-    (st.session_state.hema_points,(0,0,255),"B"),
-    (st.session_state.manual_aec,(255,165,0),"RA"),
-    (st.session_state.manual_hema,(128,0,128),"HB"),
-    (st.session_state.bg_points,(255,255,0),"BG"),
+for points_list, color in [
+    (st.session_state.aec_points,(255,0,0)),
+    (st.session_state.hema_points,(0,0,255)),
+    (st.session_state.manual_aec,(255,165,0)),
+    (st.session_state.manual_hema,(128,0,128)),
+    (st.session_state.bg_points,(255,255,0)),
 ]:
-    for idx,(x,y) in enumerate(points_list):
+    for (x,y) in points_list:
         cv2.circle(marked_disp,(x,y),circle_radius,color,2)
-        cv2.putText(marked_disp,str(idx+1),(x+circle_radius,y-circle_radius),
-                    cv2.FONT_HERSHEY_SIMPLEX,0.4,(255,255,255),1,cv2.LINE_AA)
 
 coords = streamlit_image_coordinates(Image.fromarray(marked_disp),
                                      key=f"img_{st.session_state.last_auto_run}", width=DISPLAY_WIDTH)
@@ -168,15 +174,14 @@ if coords:
     elif mode=="Manuell Hämatoxylin":
         st.session_state.manual_hema.append((x,y))
 
-# Dedup Punkte
 for k in ["aec_points","hema_points","manual_aec","manual_hema","bg_points"]:
     st.session_state[k] = dedup_points(st.session_state[k], min_dist=max(4,circle_radius//2))
 
-# -------------------- Auto-Erkennung (HSV-basiert) --------------------
+# -------------------- Auto-Erkennung --------------------
 if st.session_state.last_auto_run > 0:
     proc = cv2.convertScaleAbs(image_disp, alpha=alpha, beta=0)
-    if blur_kernel > 1: proc = cv2.GaussianBlur(proc,(blur_kernel,blur_kernel),0)
-
+    if blur_kernel > 1:
+        proc = cv2.GaussianBlur(proc,(blur_kernel,blur_kernel),0)
     hsv_proc = cv2.cvtColor(proc, cv2.COLOR_RGB2HSV)
 
     # Hintergrund subtrahieren
@@ -192,7 +197,6 @@ if st.session_state.last_auto_run > 0:
         hmin,hmax,smin,smax,vmin,vmax = st.session_state.aec_hsv
         mask_aec = apply_hue_wrap(hsv_proc,hmin,hmax,smin,smax,vmin,vmax)
         st.session_state.aec_points = get_centers(mask_aec,min_area)
-
     if st.session_state.hema_hsv:
         hmin,hmax,smin,smax,vmin,vmax = st.session_state.hema_hsv
         mask_hema = apply_hue_wrap(hsv_proc,hmin,hmax,smin,smax,vmin,vmax)
