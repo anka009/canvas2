@@ -1,4 +1,4 @@
-# canvas_minimal.py
+# canvas_stable.py
 import streamlit as st
 import cv2
 import numpy as np
@@ -47,8 +47,8 @@ def apply_hue_wrap(hsv_img, hmin,hmax,smin,smax,vmin,vmax):
     return mask
 
 # -------------------- Streamlit Setup --------------------
-st.set_page_config(page_title="Zellkern-Zähler Minimal", layout="wide")
-st.title("🧬 Zellkern-Zähler – Minimal & Stabil")
+st.set_page_config(page_title="Zellkern-Zähler Stabil", layout="wide")
+st.title("🧬 Zellkern-Zähler – Stabil & Geisterpunktefrei")
 
 # -------------------- Session State --------------------
 keys = ["aec_points","hema_points","manual_aec","manual_hema","aec_hsv","hema_hsv","last_file"]
@@ -72,7 +72,7 @@ image_orig = np.array(Image.open(uploaded_file).convert("RGB"))
 H_orig, W_orig = image_orig.shape[:2]
 scale = DISPLAY_WIDTH / W_orig
 image_disp = cv2.resize(image_orig, (DISPLAY_WIDTH, int(H_orig*scale)), interpolation=cv2.INTER_AREA)
-hsv_disp = cv2.cvtColor(image_disp, cv2.COLOR_RGB2HSV)
+hsv_orig = cv2.cvtColor(image_orig, cv2.COLOR_RGB2HSV)
 
 # -------------------- Panel: Modus & Aktionen --------------------
 with st.sidebar:
@@ -83,42 +83,46 @@ with st.sidebar:
         for k in ["aec_points","hema_points","manual_aec","manual_hema"]:
             st.session_state[k] = []
     if st.button("Kalibrierung berechnen"):
-        st.session_state.aec_hsv = compute_hsv_range(st.session_state.aec_points, hsv_disp)
-        st.session_state.hema_hsv = compute_hsv_range(st.session_state.hema_points, hsv_disp)
+        st.session_state.aec_hsv = compute_hsv_range(st.session_state.aec_points, hsv_orig)
+        st.session_state.hema_hsv = compute_hsv_range(st.session_state.hema_points, hsv_orig)
     if st.button("Auto-Erkennung"):
         st.session_state.run_auto = True
 
-# -------------------- Klicklogik --------------------
+# -------------------- Klicklogik (Originalkoordinaten) --------------------
 marked_disp = image_disp.copy()
+def scale_points_to_disp(points):
+    return [(int(x*scale), int(y*scale)) for (x,y) in points]
+
 for pts, color in [
     (st.session_state.aec_points,(255,0,0)),
     (st.session_state.hema_points,(0,0,255)),
     (st.session_state.manual_aec,(255,165,0)),
     (st.session_state.manual_hema,(128,0,128))
 ]:
-    for (x,y) in pts:
-        cv2.circle(marked_disp,(x,y),5,color,2)
+    for (x_orig, y_orig) in pts:
+        x_disp, y_disp = int(x_orig*scale), int(y_orig*scale)
+        cv2.circle(marked_disp,(x_disp, y_disp),5,color,2)
 
 coords = streamlit_image_coordinates(Image.fromarray(marked_disp), width=DISPLAY_WIDTH)
 if coords:
-    x, y = int(coords["x"]), int(coords["y"])
+    x_disp, y_disp = int(coords["x"]), int(coords["y"])
+    x_orig, y_orig = int(x_disp/scale), int(y_disp/scale)
     if mode=="Löschen":
         for k in ["aec_points","hema_points","manual_aec","manual_hema"]:
-            st.session_state[k] = [p for p in st.session_state[k] if not is_near(p,(x,y),5)]
+            st.session_state[k] = [p for p in st.session_state[k] if not is_near(p,(x_orig,y_orig),5)]
     elif mode=="AEC Kalibrierung":
-        st.session_state.aec_points.append((x,y))
+        st.session_state.aec_points.append((x_orig,y_orig))
     elif mode=="Hämatoxylin Kalibrierung":
-        st.session_state.hema_points.append((x,y))
+        st.session_state.hema_points.append((x_orig,y_orig))
     elif mode=="Manuell AEC":
-        st.session_state.manual_aec.append((x,y))
+        st.session_state.manual_aec.append((x_orig,y_orig))
     elif mode=="Manuell Hämatoxylin":
-        st.session_state.manual_hema.append((x,y))
+        st.session_state.manual_hema.append((x_orig,y_orig))
 
 # -------------------- Auto-Erkennung --------------------
 if 'run_auto' in st.session_state and st.session_state.get('run_auto'):
     st.session_state.run_auto = False
-    proc = cv2.convertScaleAbs(image_disp, alpha=1.0)
-    hsv_proc = cv2.cvtColor(proc, cv2.COLOR_RGB2HSV)
+    hsv_proc = cv2.cvtColor(image_orig, cv2.COLOR_RGB2HSV)
     # AEC
     if st.session_state.aec_hsv:
         hmin,hmax,smin,smax,vmin,vmax = st.session_state.aec_hsv
@@ -137,11 +141,11 @@ all_aec = st.session_state.aec_points + st.session_state.manual_aec
 all_hema = st.session_state.hema_points + st.session_state.manual_hema
 st.markdown(f"### Gesamt: AEC={len(all_aec)}, Hämatoxylin={len(all_hema)}")
 
-df_list = [{"X_display":x,"Y_display":y,"Type":"AEC"} for (x,y) in all_aec]
-df_list += [{"X_display":x,"Y_display":y,"Type":"Hämatoxylin"} for (x,y) in all_hema]
+df_list = [{"X_display":int(x*scale),"Y_display":int(y*scale),"Type":"AEC"} for (x,y) in all_aec]
+df_list += [{"X_display":int(x*scale),"Y_display":int(y*scale),"Type":"Hämatoxylin"} for (x,y) in all_hema]
 if df_list:
     df = pd.DataFrame(df_list)
-    df["X_original"] = (df["X_display"]/scale).round().astype("Int64")
-    df["Y_original"] = (df["Y_display"]/scale).round().astype("Int64")
+    df["X_original"] = [x for x,_ in all_aec+all_hema]
+    df["Y_original"] = [y for _,y in all_aec+all_hema]
     csv = df.to_csv(index=False).encode("utf-8")
     st.download_button("CSV exportieren", data=csv, file_name="zellkerne.csv")
