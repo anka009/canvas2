@@ -1,4 +1,4 @@
-# canvas_final_live.py
+# canvas_final_stable.py
 import streamlit as st
 import cv2
 import numpy as np
@@ -50,14 +50,23 @@ def compute_hsv_range_circle(points, hsv_img, radius=5, buffer_h=8, buffer_s=30,
     v_max = min(255, np.max(v)+buffer_v)
     return (h_min,h_max,s_min,s_max,v_min,v_max)
 
+def apply_hue_wrap(hsv_img, hmin,hmax,smin,smax,vmin,vmax):
+    if hmin <= hmax:
+        mask = cv2.inRange(hsv_img, np.array([hmin,smin,vmin]), np.array([hmax,smax,vmax]))
+    else:
+        mask_lo = cv2.inRange(hsv_img, np.array([0,smin,vmin]), np.array([hmax,smax,vmax]))
+        mask_hi = cv2.inRange(hsv_img, np.array([hmin,smin,vmin]), np.array([180,smax,vmax]))
+        mask = cv2.bitwise_or(mask_lo, mask_hi)
+    return mask
+
 # -------------------- Streamlit Setup --------------------
 st.set_page_config(page_title="Zellkern-Zähler", layout="wide")
-st.title("🧬 Zellkern-Zähler – Live Overlay Version")
+st.title("🧬 Zellkern-Zähler – Live Overlay Stable")
 
 # -------------------- Session State --------------------
-default_keys = ["aec_points","hema_points","bg_points","manual_aec","manual_hema",
-                "aec_hsv","hema_hsv","bg_hsv","last_file","disp_width","last_auto_run"]
-for key in default_keys:
+keys = ["aec_points","hema_points","bg_points","manual_aec","manual_hema",
+        "aec_hsv","hema_hsv","bg_hsv","last_file","disp_width","last_auto_run"]
+for key in keys:
     if key not in st.session_state or st.session_state[key] is None:
         if "points" in key or "manual" in key:
             st.session_state[key] = []
@@ -161,33 +170,32 @@ if coords:
 for k in ["aec_points","hema_points","manual_aec","manual_hema","bg_points"]:
     st.session_state[k] = dedup_points(st.session_state[k], min_dist=max(4,circle_radius//2))
 
-# -------------------- Auto-Erkennung --------------------
+# -------------------- Auto-Erkennung (HSV-basiert) --------------------
 if st.session_state.last_auto_run > 0:
     proc = cv2.convertScaleAbs(image_disp, alpha=alpha, beta=0)
     if blur_kernel > 1: proc = cv2.GaussianBlur(proc,(blur_kernel,blur_kernel),0)
 
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    r = clahe.apply(proc[:,:,0])
-    g = clahe.apply(proc[:,:,1])
-    b = clahe.apply(proc[:,:,2])
+    hsv_proc = cv2.cvtColor(proc, cv2.COLOR_RGB2HSV)
 
+    # Hintergrund subtrahieren
     if st.session_state.bg_points:
-        bg_vals = np.array([proc[y,x] for (x,y) in st.session_state.bg_points])
+        bg_vals = np.array([hsv_proc[y,x] for (x,y) in st.session_state.bg_points])
         if len(bg_vals) > 0:
             bg_mean = np.mean(bg_vals, axis=0)
-            r = np.clip(r - bg_mean[0], 0, 255)
-            g = np.clip(g - bg_mean[1], 0, 255)
-            b = np.clip(b - bg_mean[2], 0, 255)
+            hsv_proc[:,:,0] = np.clip(hsv_proc[:,:,0]-bg_mean[0], 0, 180)
+            hsv_proc[:,:,1] = np.clip(hsv_proc[:,:,1]-bg_mean[1], 0, 255)
+            hsv_proc[:,:,2] = np.clip(hsv_proc[:,:,2]-bg_mean[2], 0, 255)
 
+    # Masken erzeugen
     if st.session_state.aec_hsv:
-        vmin,vmax = st.session_state.aec_hsv[4], st.session_state.aec_hsv[5]
-        mask_aec = cv2.inRange(r, vmin, vmax)
-        st.session_state.aec_points = get_centers(mask_aec, min_area)
+        hmin,hmax,smin,smax,vmin,vmax = st.session_state.aec_hsv
+        mask_aec = apply_hue_wrap(hsv_proc,hmin,hmax,smin,smax,vmin,vmax)
+        st.session_state.aec_points = get_centers(mask_aec,min_area)
 
     if st.session_state.hema_hsv:
-        vmin,vmax = st.session_state.hema_hsv[4], st.session_state.hema_hsv[5]
-        mask_hema = cv2.inRange(b, vmin, vmax)
-        st.session_state.hema_points = get_centers(mask_hema, min_area)
+        hmin,hmax,smin,smax,vmin,vmax = st.session_state.hema_hsv
+        mask_hema = apply_hue_wrap(hsv_proc,hmin,hmax,smin,smax,vmin,vmax)
+        st.session_state.hema_points = get_centers(mask_hema,min_area)
 
     st.session_state.last_auto_run = 0
 
