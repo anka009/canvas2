@@ -64,7 +64,7 @@ def compute_hsv_range(points, hsv_img, buffer_h=8, buffer_s=30, buffer_v=25):
         v_min = max(0, np.min(v) - buffer_v)
         v_max = min(255, np.max(v) + buffer_v)
 
-        return (h_min, h_max, s_min, s_max, vmin, vmax)
+        return (h_min, h_max, s_min, s_max, v_min, v_max)
 
 
 def apply_hue_wrap(hsv_img, hmin, hmax, smin, smax, vmin, vmax):
