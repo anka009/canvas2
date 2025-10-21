@@ -315,6 +315,19 @@ if df_list:
     df["Y_original"] = (df["Y_display"] / scale).round().astype("Int64")
     csv = df.to_csv(index=False).encode("utf-8")
     st.download_button("📥 CSV exportieren", data=csv, file_name="zellkerne.csv", mime="text/csv")
+# -------------------- Punktanzahl anzeigen --------------------
+auto_aec = len(st.session_state.aec_points) - len(st.session_state.manual_aec)
+auto_hema = len(st.session_state.hema_points) - len(st.session_state.manual_hema)
+manual_aec = len(st.session_state.manual_aec)
+manual_hema = len(st.session_state.manual_hema)
+
+st.markdown(f"""
+### 🔢 Zellkern-Zählung
+- 🧠 Auto AEC: **{auto_aec}**
+- 🧠 Auto Hämatoxylin: **{auto_hema}**
+- ✋ Manuell AEC: **{manual_aec}**
+- ✋ Manuell Hämatoxylin: **{manual_hema}**
+""")
 
 # -------------------- Debug Info (optional) --------------------
 with st.expander("🧠 Debug Info"):
