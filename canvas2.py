@@ -328,6 +328,18 @@ st.markdown(f"""
 - ✋ Manuell AEC: **{manual_aec}**
 - ✋ Manuell Hämatoxylin: **{manual_hema}**
 """)
+auto_aec = len(st.session_state.aec_points) - len(st.session_state.manual_aec)
+auto_hema = len(st.session_state.hema_points) - len(st.session_state.manual_hema)
+manual_aec = len(st.session_state.manual_aec)
+manual_hema = len(st.session_state.manual_hema)
+
+st.markdown(f"""
+### 🔢 Zellkern-Zählung
+- 🧠 Auto AEC: **{auto_aec}**
+- 🧠 Auto Hämatoxylin: **{auto_hema}**
+- ✋ Manuell AEC: **{manual_aec}**
+- ✋ Manuell Hämatoxylin: **{manual_hema}**
+""")
 
 # -------------------- Debug Info (optional) --------------------
 with st.expander("🧠 Debug Info"):
