@@ -211,18 +211,35 @@ if coords:
 for k in ["aec_points", "hema_points", "bg_points", "manual_aec", "manual_hema"]:
     st.session_state[k] = dedup_points(st.session_state[k], min_dist=max(4, circle_radius//2))
 
-# -------------------- Kalibrierung speichern --------------------
-col_cal1, col_cal2 = st.columns(2)
+# -------------------- Kalibrierung speichern (getrennt) --------------------
+st.markdown("### ⚙️ Kalibrierung")
+
+col_cal1, col_cal2, col_cal3 = st.columns(3)
+
 with col_cal1:
-    if st.button("⚡ Kalibrierung berechnen"):
-        st.session_state.aec_hsv = compute_hsv_range(st.session_state.aec_points, hsv_disp)
-        st.session_state.hema_hsv = compute_hsv_range(st.session_state.hema_points, hsv_disp)
-        st.session_state.bg_hsv = compute_hsv_range(st.session_state.bg_points, hsv_disp)
-        st.success("Kalibrierung gespeichert.")
+    if st.button("⚡ AEC kalibrieren"):
+        if st.session_state.aec_points:
+            st.session_state.aec_hsv = compute_hsv_range(st.session_state.aec_points, hsv_disp)
+            st.success("✅ AEC-Kalibrierung gespeichert.")
+        else:
+            st.warning("⚠️ Keine AEC-Punkte vorhanden.")
+
 with col_cal2:
-    if st.button("🧹 Hintergrundpunkte löschen"):
-        st.session_state.bg_points = []
-        st.info("Hintergrund-Punkte gelöscht.")
+    if st.button("⚡ Hämatoxylin kalibrieren"):
+        if st.session_state.hema_points:
+            st.session_state.hema_hsv = compute_hsv_range(st.session_state.hema_points, hsv_disp)
+            st.success("✅ Hämatoxylin-Kalibrierung gespeichert.")
+        else:
+            st.warning("⚠️ Keine Hämatoxylin-Punkte vorhanden.")
+
+with col_cal3:
+    if st.button("⚡ Hintergrund kalibrieren"):
+        if st.session_state.bg_points:
+            st.session_state.bg_hsv = compute_hsv_range(st.session_state.bg_points, hsv_disp)
+            st.success("✅ Hintergrund-Kalibrierung gespeichert.")
+        else:
+            st.warning("⚠️ Keine Hintergrund-Punkte vorhanden.")
+
 
 # -------------------- Auto-Erkennung (reaktiv bei last_auto_run Veränderung) --------------------
 # Wenn last_auto_run > 0, führe Erkennung aus
