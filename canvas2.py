@@ -38,7 +38,7 @@ def get_centers(mask, min_area=50):
     return centers
 
 def compute_hsv_range(points, hsv_img, buffer_h=8, buffer_s=30, buffer_v=25):
-    radius = 0  # fester Radius in Pixeln
+    radius = 1  # fester Radius in Pixeln
     if not points:
         return None
 
