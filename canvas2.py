@@ -5,6 +5,7 @@ import numpy as np
 from PIL import Image
 from streamlit_image_coordinates import streamlit_image_coordinates
 import pandas as pd
+import json
 
 # -------------------- Hilfsfunktionen --------------------
 def is_near(p1, p2, r=10):
@@ -81,6 +82,25 @@ def ensure_odd(k):
     if k % 2 == 1:
         return k
     return k + 1
+def save_last_calibration():
+    data = {
+        "aec_hsv": st.session_state.aec_hsv,
+        "hema_hsv": st.session_state.hema_hsv,
+        "bg_hsv": st.session_state.bg_hsv
+    }
+    with open("kalibrierung.json", "w") as f:
+        json.dump(data, f)
+
+def load_last_calibration():
+    try:
+        with open("kalibrierung.json", "r") as f:
+            data = json.load(f)
+            st.session_state.aec_hsv = data.get("aec_hsv")
+            st.session_state.hema_hsv = data.get("hema_hsv")
+            st.session_state.bg_hsv = data.get("bg_hsv")
+            st.success("✅ Letzte Kalibrierung geladen.")
+    except FileNotFoundError:
+        st.warning("⚠️ Keine gespeicherte Kalibrierung gefunden.")
 
 # -------------------- Streamlit Setup --------------------
 st.set_page_config(page_title="Zellkern-Zähler (fixed)", layout="wide")
@@ -239,6 +259,14 @@ with col_cal3:
         else:
             st.warning("⚠️ Keine Hintergrund-Punkte vorhanden.")
 
+st.markdown("### 💾 Kalibrierung speichern/laden")
+col_save, col_load = st.columns(2)
+with col_save:
+    if st.button("💾 Letzte Kalibrierung speichern"):
+        save_last_calibration()
+with col_load:
+    if st.button("📂 Letzte Kalibrierung laden"):
+        load_last_calibration()
 
 # -------------------- Auto-Erkennung (reaktiv bei last_auto_run Veränderung) --------------------
 # Wenn last_auto_run > 0, führe Erkennung aus
