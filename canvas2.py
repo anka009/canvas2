@@ -6,6 +6,7 @@ from PIL import Image
 from streamlit_image_coordinates import streamlit_image_coordinates
 import pandas as pd
 import json
+import numpy as np
 
 # -------------------- Hilfsfunktionen --------------------
 def is_near(p1, p2, r=10):
@@ -119,6 +120,25 @@ for key in default_keys:
             st.session_state[key] = 1400
         else:
             st.session_state[key] = None
+def save_last_calibration():
+    data = {
+        "aec_hsv": st.session_state.aec_hsv.tolist() if st.session_state.aec_hsv is not None else None,
+        "hema_hsv": st.session_state.hema_hsv.tolist() if st.session_state.hema_hsv is not None else None,
+        "bg_hsv": st.session_state.bg_hsv.tolist() if st.session_state.bg_hsv is not None else None
+    }
+    with open("kalibrierung.json", "w") as f:
+        json.dump(data, f)
+
+def load_last_calibration():
+    try:
+        with open("kalibrierung.json", "r") as f:
+            data = json.load(f)
+            st.session_state.aec_hsv = np.array(data.get("aec_hsv")) if data.get("aec_hsv") else None
+            st.session_state.hema_hsv = np.array(data.get("hema_hsv")) if data.get("hema_hsv") else None
+            st.session_state.bg_hsv = np.array(data.get("bg_hsv")) if data.get("bg_hsv") else None
+            st.success("✅ Letzte Kalibrierung geladen.")
+    except FileNotFoundError:
+        st.warning("⚠️ Keine gespeicherte Kalibrierung gefunden.")
 
 # -------------------- File upload --------------------
 uploaded_file = st.file_uploader("🔍 Bild hochladen", type=["jpg", "jpeg", "png", "tif", "tiff"])
