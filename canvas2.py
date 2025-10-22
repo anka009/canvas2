@@ -139,7 +139,6 @@ with col2:
     alpha = st.slider("🌗 Alpha (Kontrast)", 0.1, 3.0, 1.0, step=0.1)
 with col3:
     circle_radius = st.slider("⚪ Kreisradius (Display-Px)", 1, 20, 4)
-    line_thickness = st.slider("📏 Linienstärke", 1, 5, 2)
 
 # -------------------- Modi (exklusiv) --------------------
 st.markdown("### 🎨 Modus auswählen (exklusiv)")
