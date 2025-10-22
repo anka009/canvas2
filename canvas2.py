@@ -121,11 +121,23 @@ for key in default_keys:
         else:
             st.session_state[key] = None
 def save_last_calibration():
+    import json
+    import numpy as np
+
+    def safe_list(val):
+        if isinstance(val, np.ndarray):
+            return val.tolist()
+        elif isinstance(val, list):
+            return val
+        else:
+            return None
+
     data = {
-        "aec_hsv": st.session_state.aec_hsv.tolist() if st.session_state.aec_hsv is not None else None,
-        "hema_hsv": st.session_state.hema_hsv.tolist() if st.session_state.hema_hsv is not None else None,
-        "bg_hsv": st.session_state.bg_hsv.tolist() if st.session_state.bg_hsv is not None else None
+        "aec_hsv": safe_list(st.session_state.get("aec_hsv")),
+        "hema_hsv": safe_list(st.session_state.get("hema_hsv")),
+        "bg_hsv": safe_list(st.session_state.get("bg_hsv"))
     }
+
     with open("kalibrierung.json", "w") as f:
         json.dump(data, f)
 
