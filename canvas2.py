@@ -384,4 +384,30 @@ if st.session_state.last_auto_run > 0:
 all_aec = st.session_state.aec_points or []
 all_hema = st.session_state.hema_points or []
 
-st
+n_aec = len(all_aec)
+n_hema = len(all_hema)
+
+st.markdown("### 📊 Ergebnisse")
+colA, colB = st.columns(2)
+with colA:
+    st.metric("AEC-positive Zellen", n_aec)
+with colB:
+    st.metric("Hämatoxylin-positive Zellen", n_hema)
+
+# Vorschau-Markierung im Bild
+result_img = image_disp.copy()
+for (x, y) in all_aec:
+    cv2.circle(result_img, (x, y), circle_radius, (255, 0, 0), 2)
+for (x, y) in all_hema:
+    cv2.circle(result_img, (x, y), circle_radius, (0, 0, 255), 2)
+
+st.image(result_img, caption=f"Erkannte Zellen (AEC={n_aec}, Häma={n_hema})", use_container_width=True)
+
+# Exportoptionen
+csv_data = pd.DataFrame({
+    "Typ": ["AEC"] * n_aec + ["Hämatoxylin"] * n_hema,
+    "x": [p[0] for p in all_aec + all_hema],
+    "y": [p[1] for p in all_aec + all_hema],
+})
+csv_bytes = csv_data.to_csv(index=False).encode("utf-8")
+st.download_button("📥 Ergebnisse als CSV herunterladen", csv_bytes, "zell_ergebnisse.csv", "text/csv")
