@@ -273,30 +273,56 @@ for points_list, color in [
 image_key = f"clickable_image_{st.session_state.last_auto_run}_{uploaded_file.name}"
 coords = streamlit_image_coordinates(Image.fromarray(marked_disp), key=image_key, width=DISPLAY_WIDTH)
 
-if coords and "x" in coords and "y" in coords:
-    try:
-        x = int(round(float(coords["x"])))
-        y = int(round(float(coords["y"])))
-    except Exception:
-        x, y = None, None
+# -------------------- Sidebar: minimale Punkte für Kalibrierung --------------------
+min_points_calib = st.sidebar.slider(
+    "🧮 Minimale Punkte für automatische Kalibrierung",
+    min_value=1, max_value=10, value=3, step=1
+)
 
-    if x is not None and y is not None and 0 <= x < DISPLAY_WIDTH and 0 <= y < marked_disp.shape[0]:
-        if delete_mode:
-            for key in ["aec_points", "hema_points", "bg_points", "manual_aec", "manual_hema"]:
-                st.session_state[key] = [p for p in st.session_state[key] if not is_near(p, (x, y), circle_radius)]
-        elif aec_mode:
-            st.session_state.aec_points.append((x, y))
-        elif hema_mode:
-            st.session_state.hema_points.append((x, y))
-        elif bg_mode:
-            st.session_state.bg_points.append((x, y))
-        elif manual_aec_mode:
-            st.session_state.manual_aec.append((x, y))
-        elif manual_hema_mode:
-            st.session_state.manual_hema.append((x, y))
+# -------------------- Klicklogik (mehrpunktfähig + dedup) --------------------
+if coords:
+    x, y = int(coords["x"]), int(coords["y"])
+    if delete_mode:
+        for key in ["aec_points", "hema_points", "bg_points", "manual_aec", "manual_hema"]:
+            st.session_state[key] = [p for p in st.session_state[key] if not is_near(p, (x, y), circle_radius)]
 
+    elif aec_mode:
+        st.session_state.aec_points.append((x, y))
+        st.info(f"📍 AEC-Punkt hinzugefügt ({x}, {y})")
+
+    elif hema_mode:
+        st.session_state.hema_points.append((x, y))
+        st.info(f"📍 Hämatoxylin-Punkt hinzugefügt ({x}, {y})")
+
+    elif bg_mode:
+        st.session_state.bg_points.append((x, y))
+        st.info(f"📍 Hintergrund-Punkt hinzugefügt ({x}, {y})")
+
+    elif manual_aec_mode:
+        st.session_state.manual_aec.append((x, y))
+
+    elif manual_hema_mode:
+        st.session_state.manual_hema.append((x, y))
+
+# dedup session lists, um Geisterpunkte zu vermeiden
 for k in ["aec_points", "hema_points", "bg_points", "manual_aec", "manual_hema"]:
     st.session_state[k] = dedup_points(st.session_state[k], min_dist=max(4, circle_radius // 2))
+
+# -------------------- Automatische Kalibrierung nach minimaler Punktzahl --------------------
+def auto_calibrate(category):
+    points_key = f"{category}_points"
+    hsv_key = f"{category}_hsv"
+    points = st.session_state.get(points_key, [])
+    if len(points) >= min_points_calib:
+        st.session_state[hsv_key] = compute_hsv_range(points, hsv_disp, radius=calib_radius)
+        st.session_state[points_key] = []  # Punkte zurücksetzen
+        st.success(f"✅ {category.upper()}-Kalibrierung automatisch durchgeführt ({len(points)} Punkte)")
+        st.session_state.last_auto_run += 1  # Auto-Erkennung auslösen
+
+# Führe automatische Kalibrierung für jede Kategorie durch
+auto_calibrate("aec")
+auto_calibrate("hema")
+auto_calibrate("bg")
 
 # ==========================================================
 # Kalibrierung
