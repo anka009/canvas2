@@ -278,7 +278,7 @@ min_points_calib = st.sidebar.slider(
     "🧮 Minimale Punkte für automatische Kalibrierung",
     min_value=1, max_value=10, value=3, step=1
 )
-
+st.sidebar.info("Kalibrierung läuft automatisch, sobald die minimale Punktzahl erreicht ist.")
 # -------------------- Klicklogik (mehrpunktfähig + dedup) --------------------
 if coords:
     x, y = int(coords["x"]), int(coords["y"])
