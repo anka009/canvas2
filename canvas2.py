@@ -324,35 +324,6 @@ auto_calibrate("aec")
 auto_calibrate("hema")
 auto_calibrate("bg")
 
-# ==========================================================
-# Kalibrierung
-# ==========================================================
-st.markdown("### ⚙️ Kalibrierung")
-col1, col2, col3 = st.columns(3)
-with col1:
-    if st.button("⚡ AEC kalibrieren"):
-        if st.session_state.aec_points:
-            st.session_state.aec_hsv = compute_hsv_range(st.session_state.aec_points, hsv_disp)
-            st.session_state.aec_points = []
-            st.success("✅ AEC-Kalibrierung gespeichert.")
-        else:
-            st.warning("Keine Punkte.")
-with col2:
-    if st.button("⚡ Hämatoxylin kalibrieren"):
-        if st.session_state.hema_points:
-            st.session_state.hema_hsv = compute_hsv_range(st.session_state.hema_points, hsv_disp)
-            st.session_state.hema_points = []
-            st.success("✅ Hämatoxylin-Kalibrierung gespeichert.")
-        else:
-            st.warning("Keine Punkte.")
-with col3:
-    if st.button("⚡ Hintergrund kalibrieren"):
-        if st.session_state.bg_points:
-            st.session_state.bg_hsv = compute_hsv_range(st.session_state.bg_points, hsv_disp)
-            st.session_state.bg_points = []
-            st.success("✅ Hintergrund-Kalibrierung gespeichert.")
-        else:
-            st.warning("Keine Punkte.")
 
 # ==========================================================
 # Auto-Erkennung
