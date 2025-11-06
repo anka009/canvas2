@@ -1,22 +1,21 @@
-# zellkern_robust.py
+# canvas_safe_fixed_clean_v2.py
 import streamlit as st
-import numpy as np
 import cv2
+import numpy as np
 from PIL import Image
-import json
-from pathlib import Path
-import pandas as pd
 from streamlit_image_coordinates import streamlit_image_coordinates
+import pandas as pd
+import json
 
-# -------------------- Hilfsfunktionen --------------------
-def ensure_odd(k):
-    k = int(k)
-    return k if k % 2 == 1 else k + 1
+# ==========================================================
+# Hilfsfunktionen
+# ==========================================================
 
 def is_near(p1, p2, r=10):
     return np.linalg.norm(np.array(p1) - np.array(p2)) < r
 
 def dedup_points(points, min_dist=6):
+    """Entfernt Punkte, die sich zu nahe sind (keine Duplikate/Geister)."""
     out = []
     for p in points:
         if not any(is_near(p, q, r=min_dist) for q in out):
@@ -24,434 +23,365 @@ def dedup_points(points, min_dist=6):
     return out
 
 def get_centers(mask, min_area=50):
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    """Robuste findContours-Variante (kompatibel mit OpenCV 3/4)."""
+    m = mask.copy()
+    res = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if isinstance(res, tuple) and len(res) == 2:
+        contours = res[0]
+    elif isinstance(res, tuple) and len(res) == 3:
+        contours = res[1]
+    else:
+        contours = res[1] if len(res) > 1 else []
+
     centers = []
     for c in contours:
         if cv2.contourArea(c) >= min_area:
             M = cv2.moments(c)
-            if M.get("m00", 0) != 0:
-                cx = int(M["m10"] / M["m00"])
-                cy = int(M["m01"] / M["m00"])
+            if M.get("m00", 0):
+                cx = int(round(M["m10"] / M["m00"]))
+                cy = int(round(M["m01"] / M["m00"]))
                 centers.append((cx, cy))
     return centers
 
-def safe_array_to_list(arr):
-    if arr is None:
-        return None
-    return list(map(int, list(arr)))
+def circular_mean_deg(h):
+    """Berechnet kreisförmigen Mittelwert für Hue (0..180)."""
+    angles = (h.astype(float) / 180.0) * 2.0 * np.pi
+    s = np.sin(angles).mean()
+    c = np.cos(angles).mean()
+    ang = np.arctan2(s, c)
+    if ang < 0:
+        ang += 2.0 * np.pi
+    return (ang / (2.0 * np.pi)) * 180.0
 
-def load_image(file):
-    img = Image.open(file).convert("RGB")
-    return np.array(img)
-
-def apply_hue_wrap(hsv_img, hmin, hmax, smin, smax, vmin, vmax):
-    if hmin <= hmax:
-        return cv2.inRange(hsv_img, np.array([hmin, smin, vmin]), np.array([hmax, smax, vmax]))
-    else:
-        mask_lo = cv2.inRange(hsv_img, np.array([0, smin, vmin]), np.array([hmax, smax, vmax]))
-        mask_hi = cv2.inRange(hsv_img, np.array([hmin, smin, vmin]), np.array([180, smax, vmax]))
-        return cv2.bitwise_or(mask_lo, mask_hi)
-
-def clahe_rgb(img):
-    # CLAHE on L channel via LAB
-    lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    cl = clahe.apply(l)
-    lab = cv2.merge((cl, a, b))
-    return cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
-
-# -------------------- Robust HSV-Bereich (Median + IQR + Buffer) --------------------
-def compute_hsv_range(points, hsv_img, sample_radius=5, buffer=(0,0,0)):
-    """
-    points: list of (x,y) on displayed image coords
-    hsv_img: HSV image (display)
-    returns: (hmin,hmax,smin,smax,vmin,vmax) or None
-    """
+def compute_hsv_range(points, hsv_img, radius=5):
+    """Berechne robusten HSV-Bereich aus markierten Punkten."""
     if not points:
         return None
 
-    samples = []
-    h_vals = []
-    s_vals = []
-    v_vals = []
-    for (x,y) in points:
-        x0 = max(0, x - sample_radius)
-        x1 = min(hsv_img.shape[1], x + sample_radius + 1)
-        y0 = max(0, y - sample_radius)
-        y1 = min(hsv_img.shape[0], y + sample_radius + 1)
-        region = hsv_img[y0:y1, x0:x1]
-        if region.size:
-            region = region.reshape(-1,3)
-            h_vals.extend(region[:,0].tolist())
-            s_vals.extend(region[:,1].tolist())
-            v_vals.extend(region[:,2].tolist())
+    vals = []
+    for (x, y) in points:
+        x_min = max(0, x - radius)
+        x_max = min(hsv_img.shape[1], x + radius + 1)
+        y_min = max(0, y - radius)
+        y_max = min(hsv_img.shape[0], y + radius + 1)
+        region = hsv_img[y_min:y_max, x_min:x_max]
+        if region.size > 0:
+            vals.append(region.reshape(-1, 3))
 
-    if not h_vals:
+    if not vals:
         return None
 
-    h = np.array(h_vals, dtype=int)
-    s = np.array(s_vals, dtype=int)
-    v = np.array(v_vals, dtype=int)
+    vals = np.vstack(vals)
+    h = vals[:, 0].astype(int)
+    s = vals[:, 1].astype(int)
+    v = vals[:, 2].astype(int)
 
-    # handle hue wrap-around by mapping to circular domain: try two strategies and pick the narrower range
-    def circ_range(arr):
-        # arr in 0..179
-        med = np.median(arr)
-        shifted = (arr - med + 180) % 180
-        lo = np.percentile(shifted, 15)
-        hi = np.percentile(shifted, 85)
-        # convert back
-        lo = int((lo + med - 180) % 180)
-        hi = int((hi + med - 180) % 180)
-        return lo, hi
+    # Medianwerte (robuster gegen Ausreißer)
+    h_med = circular_mean_deg(h)
+    s_med = float(np.median(s))
+    v_med = float(np.median(v))
 
-    # median + IQR approach for s and v
-    s_med = int(np.median(s))
-    v_med = int(np.median(v))
-    s_iqr = int(np.subtract(*np.percentile(s, [75,25])))
-    v_iqr = int(np.subtract(*np.percentile(v, [75,25])))
+    n_points = len(points)
+    tol_h = int(min(25, 10 + n_points * 3))
+    tol_s = int(min(80, 30 + n_points * 10))
+    tol_v = int(min(80, 30 + n_points * 10))
 
-    # dynamic tolerances but bounded
-    s_tol = max(20, min(80, s_iqr*2))
-    v_tol = max(20, min(80, v_iqr*2))
+    if np.std(h) > 25:
+        tol_h = min(40, tol_h + 5)
 
-    # hue: try normal median approach then circular
-    h_med = int(np.median(h))
-    h_iqr = int(np.subtract(*np.percentile(h, [75,25])))
-    h_tol = max(8, min(40, h_iqr*2 + 8))
-
-    # circular correction if distribution near 0/179
-    h_min_try = (h_med - h_tol) % 180
-    h_max_try = (h_med + h_tol) % 180
-    # also compute circ range
-    h_min_circ, h_max_circ = circ_range(h)
-
-    # choose the option yielding smaller interval length
-    def interval_len(a,b):
-        if a <= b:
-            return b - a
-        else:
-            return (180 - a) + b
-
-    if interval_len(h_min_try, h_max_try) <= interval_len(h_min_circ, h_max_circ):
-        h_min, h_max = h_min_try, h_max_try
-    else:
-        h_min, h_max = h_min_circ, h_max_circ
-
-    # apply buffers from sidebar
-    bh, bs, bv = buffer
-    h_min = int((h_min - bh) % 180)
-    h_max = int((h_max + bh) % 180)
-    s_min = max(0, int(s_med - s_tol - bs))
-    s_max = min(255, int(s_med + s_tol + bs))
-    v_min = max(0, int(v_med - v_tol - bv))
-    v_max = min(255, int(v_med + v_tol + bv))
+    h_min = int(round((h_med - tol_h) % 180))
+    h_max = int(round((h_med + tol_h) % 180))
+    s_min = max(0, int(round(s_med - tol_s)))
+    s_max = min(255, int(round(s_med + tol_s)))
+    v_min = max(0, int(round(v_med - tol_v)))
+    v_max = min(255, int(round(v_med + tol_v)))
 
     return (h_min, h_max, s_min, s_max, v_min, v_max)
 
-# -------------------- Save/Load calibration --------------------
-CALIB_FILE = "kalib_robust.json"
-def save_calib(aec, hema, bg):
-    data = {"aec": safe_array_to_list(aec), "hema": safe_array_to_list(hema), "bg": safe_array_to_list(bg)}
-    try:
-        with open(CALIB_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
-        st.success("Kalibrierung gespeichert.")
-    except Exception as e:
-        st.error(f"Speichern fehlgeschlagen: {e}")
+def apply_hue_wrap(hsv_img, hmin, hmax, smin, smax, vmin, vmax):
+    """Maskiert unter Berücksichtigung von Hue-Wrap-around."""
+    if hmin <= hmax:
+        mask = cv2.inRange(hsv_img, np.array([hmin, smin, vmin]), np.array([hmax, smax, vmax]))
+    else:
+        mask_lo = cv2.inRange(hsv_img, np.array([0, smin, vmin]), np.array([hmax, smax, vmax]))
+        mask_hi = cv2.inRange(hsv_img, np.array([hmin, smin, vmin]), np.array([180, smax, vmax]))
+        mask = cv2.bitwise_or(mask_lo, mask_hi)
+    return mask
 
-def load_calib():
-    p = Path(CALIB_FILE)
-    if not p.exists():
-        st.warning("Keine gespeicherte Kalibrierung gefunden.")
-        return None, None, None
-    try:
-        with open(p, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        a = np.array(data.get("aec")) if data.get("aec") else None
-        h = np.array(data.get("hema")) if data.get("hema") else None
-        b = np.array(data.get("bg")) if data.get("bg") else None
-        st.success("Kalibrierung geladen.")
-        return a,h,b
-    except Exception as e:
-        st.error(f"Laden fehlgeschlagen: {e}")
-        return None, None, None
+def ensure_odd(k):
+    return k if k % 2 == 1 else k + 1
 
-# -------------------- Session State Defaults --------------------
-if "app" not in st.session_state:
-    st.session_state["app"] = {
-        "aec_points": [],
-        "hema_points": [],
-        "bg_points": [],
-        "manual_aec": [],
-        "manual_hema": [],
-        "aec_hsv": None,
-        "hema_hsv": None,
-        "bg_hsv": None,
-        "last_click_id": None,
-        "last_file": None,
-        "display_width": 1200,
-        "last_auto_run": 0
+def remove_near(points, forbidden_points, r):
+    if not forbidden_points:
+        return points
+    return [p for p in points if not any(is_near(p, q, r) for q in forbidden_points)]
+
+def save_last_calibration():
+    """Speichert HSV-Werte in JSON."""
+    def safe_list(val):
+        if isinstance(val, np.ndarray):
+            return val.tolist()
+        elif isinstance(val, list):
+            return val
+        else:
+            return None
+    data = {
+        "aec_hsv": safe_list(st.session_state.get("aec_hsv")),
+        "hema_hsv": safe_list(st.session_state.get("hema_hsv")),
+        "bg_hsv": safe_list(st.session_state.get("bg_hsv"))
     }
+    try:
+        with open("kalibrierung.json", "w") as f:
+            json.dump(data, f)
+        st.success("💾 Kalibrierung gespeichert.")
+    except Exception as e:
+        st.error(f"Fehler beim Speichern: {e}")
 
-APP = st.session_state["app"]
+def load_last_calibration():
+    """Lädt HSV-Kalibrierung aus JSON."""
+    try:
+        with open("kalibrierung.json", "r") as f:
+            data = json.load(f)
+        st.session_state.aec_hsv = np.array(data.get("aec_hsv")) if data.get("aec_hsv") else None
+        st.session_state.hema_hsv = np.array(data.get("hema_hsv")) if data.get("hema_hsv") else None
+        st.session_state.bg_hsv = np.array(data.get("bg_hsv")) if data.get("bg_hsv") else None
+        st.success("✅ Letzte Kalibrierung geladen.")
+    except FileNotFoundError:
+        st.warning("⚠️ Keine gespeicherte Kalibrierung gefunden.")
+    except Exception as e:
+        st.error(f"Fehler beim Laden der Kalibrierung: {e}")
 
-# -------------------- UI: Header & Upload --------------------
-st.set_page_config(page_title="Zellkern-Zähler (robust)", layout="wide")
-st.title("🧬 Zellkern-Zähler — robust & mit Masken-Vorschau")
+# ==========================================================
+# Streamlit Setup
+# ==========================================================
+st.set_page_config(page_title="Zellkern-Zähler (v2)", layout="wide")
+st.title("🧬 Zellkern-Zähler – 3-Punkt-Kalibrierung (stabil)")
 
-uploaded = st.file_uploader("Bild hochladen", type=["jpg","jpeg","png","tif","tiff"])
-if not uploaded:
-    st.info("Bitte ein Bild hochladen, um zu starten.")
+# ----------------------------------------------------------
+# Session State
+# ----------------------------------------------------------
+default_keys = [
+    "aec_points", "hema_points", "bg_points", "manual_aec", "manual_hema",
+    "aec_hsv", "hema_hsv", "bg_hsv", "last_file", "disp_width", "last_auto_run"
+]
+for key in default_keys:
+    if key not in st.session_state:
+        if "points" in key or "manual" in key:
+            st.session_state[key] = []
+        elif key == "disp_width":
+            st.session_state[key] = 1400
+        else:
+            st.session_state[key] = None
+
+# ----------------------------------------------------------
+# File upload
+# ----------------------------------------------------------
+uploaded_file = st.file_uploader("🔍 Bild hochladen", type=["jpg", "jpeg", "png", "tif", "tiff"])
+if not uploaded_file:
+    st.info("Bitte zuerst ein Bild hochladen.")
     st.stop()
 
-# reset on new file
-if uploaded.name != APP["last_file"]:
-    APP.update({
-        "aec_points": [],
-        "hema_points": [],
-        "bg_points": [],
-        "manual_aec": [],
-        "manual_hema": [],
-        "aec_hsv": None,
-        "hema_hsv": None,
-        "bg_hsv": None,
-        "last_click_id": None,
-        "last_auto_run": 0
-    })
-    APP["last_file"] = uploaded.name
+# Reset bei neuem Bild
+if uploaded_file.name != st.session_state.last_file:
+    for k in ["aec_points", "hema_points", "bg_points", "manual_aec", "manual_hema"]:
+        st.session_state[k] = []
+    for k in ["aec_hsv", "hema_hsv", "bg_hsv"]:
+        st.session_state[k] = None
+    st.session_state.last_file = uploaded_file.name
+    st.session_state.disp_width = 1400
+    st.session_state.last_auto_run = 0
 
-# -------------------- Left: image and interactions --------------------
-col1, col2 = st.columns([2,1])
+# ----------------------------------------------------------
+# Bild vorbereiten
+# ----------------------------------------------------------
+colW1, colW2 = st.columns([2, 1])
+with colW1:
+    DISPLAY_WIDTH = st.slider("📐 Bildbreite", 400, 2000, st.session_state.disp_width, step=100)
+    st.session_state.disp_width = DISPLAY_WIDTH
+
+image_orig = np.array(Image.open(uploaded_file).convert("RGB"))
+H_orig, W_orig = image_orig.shape[:2]
+scale = DISPLAY_WIDTH / W_orig
+image_disp = cv2.resize(image_orig, (DISPLAY_WIDTH, int(H_orig * scale)), interpolation=cv2.INTER_AREA)
+hsv_disp = cv2.cvtColor(image_disp, cv2.COLOR_RGB2HSV)
+
+# ==========================================================
+# Sidebar: Parameter
+# ==========================================================
+st.sidebar.markdown("### ⚙️ Filter & Kalibrierung")
+blur_kernel = ensure_odd(st.sidebar.slider("🔧 Blur (ungerade empfohlen)", 1, 21, 5))
+min_area = st.sidebar.number_input("📏 Mindestfläche (px)", 10, 2000, 100)
+alpha = st.sidebar.slider("🌗 Alpha (Kontrast)", 0.1, 3.0, 1.0, step=0.1)
+circle_radius = st.sidebar.slider("⚪ Kreisradius (Display-Px)", 1, 20, 5)
+calib_radius = st.sidebar.slider("🎯 Kalibrierungsradius (Pixel)", 1, 15, 5)
+
+st.sidebar.markdown("### 🎨 Modus auswählen")
+mode = st.sidebar.radio("Modus", [
+    "Keine",
+    "AEC markieren (Kalibrierung)",
+    "Hämatoxylin markieren (Kalibrierung)",
+    "Hintergrund markieren",
+    "AEC manuell hinzufügen",
+    "Hämatoxylin manuell hinzufügen",
+    "Punkt löschen (alle Kategorien)"
+])
+
+aec_mode = mode == "AEC markieren (Kalibrierung)"
+hema_mode = mode == "Hämatoxylin markieren (Kalibrierung)"
+bg_mode = mode == "Hintergrund markieren"
+manual_aec_mode = mode == "AEC manuell hinzufügen"
+manual_hema_mode = mode == "Hämatoxylin manuell hinzufügen"
+delete_mode = mode == "Punkt löschen (alle Kategorien)"
+
+# Schnellaktionen
+st.sidebar.markdown("### ⚡ Schnellaktionen")
+if st.sidebar.button("🧹 Alle Punkte löschen"):
+    for k in ["aec_points", "hema_points", "bg_points", "manual_aec", "manual_hema"]:
+        st.session_state[k] = []
+    st.success("Alle Punkte gelöscht.")
+
+if st.sidebar.button("🧾 Kalibrierung zurücksetzen"):
+    st.session_state.aec_hsv = None
+    st.session_state.hema_hsv = None
+    st.session_state.bg_hsv = None
+    st.info("Kalibrierungswerte zurückgesetzt.")
+
+if st.sidebar.button("🤖 Auto-Erkennung ausführen"):
+    st.session_state.last_auto_run += 1
+
+# Speichern / Laden
+st.sidebar.markdown("### 💾 Kalibrierung")
+if st.sidebar.button("💾 Speichern"):
+    save_last_calibration()
+if st.sidebar.button("📂 Laden"):
+    load_last_calibration()
+
+# ==========================================================
+# Bildanzeige mit Markierungen
+# ==========================================================
+marked_disp = image_disp.copy()
+for points_list, color in [
+    (st.session_state.aec_points, (255, 100, 100)),
+    (st.session_state.hema_points, (100, 100, 255)),
+    (st.session_state.bg_points, (255, 255, 0)),
+    (st.session_state.manual_aec, (255, 165, 0)),
+    (st.session_state.manual_hema, (128, 0, 128))
+]:
+    for (x, y) in points_list:
+        cv2.circle(marked_disp, (x, y), circle_radius, color, -1)
+
+image_key = f"clickable_image_{st.session_state.last_auto_run}_{uploaded_file.name}"
+coords = streamlit_image_coordinates(Image.fromarray(marked_disp), key=image_key, width=DISPLAY_WIDTH)
+
+if coords and "x" in coords and "y" in coords:
+    try:
+        x = int(round(float(coords["x"])))
+        y = int(round(float(coords["y"])))
+    except Exception:
+        x, y = None, None
+
+    if x is not None and y is not None and 0 <= x < DISPLAY_WIDTH and 0 <= y < marked_disp.shape[0]:
+        if delete_mode:
+            for key in ["aec_points", "hema_points", "bg_points", "manual_aec", "manual_hema"]:
+                st.session_state[key] = [p for p in st.session_state[key] if not is_near(p, (x, y), circle_radius)]
+        elif aec_mode:
+            st.session_state.aec_points.append((x, y))
+        elif hema_mode:
+            st.session_state.hema_points.append((x, y))
+        elif bg_mode:
+            st.session_state.bg_points.append((x, y))
+        elif manual_aec_mode:
+            st.session_state.manual_aec.append((x, y))
+        elif manual_hema_mode:
+            st.session_state.manual_hema.append((x, y))
+
+for k in ["aec_points", "hema_points", "bg_points", "manual_aec", "manual_hema"]:
+    st.session_state[k] = dedup_points(st.session_state[k], min_dist=max(4, circle_radius // 2))
+
+# ==========================================================
+# Kalibrierung
+# ==========================================================
+st.markdown("### ⚙️ Kalibrierung")
+col1, col2, col3 = st.columns(3)
 with col1:
-    DISPLAY_WIDTH = st.slider("Bildbreite (px)", 400, 1600, APP["display_width"], step=100)
-    APP["display_width"] = DISPLAY_WIDTH
-
-    image_orig = load_image(uploaded)
-    H_orig, W_orig = image_orig.shape[:2]
-    scale = DISPLAY_WIDTH / W_orig if W_orig > 0 else 1.0
-    image_disp = cv2.resize(image_orig, (DISPLAY_WIDTH, int(H_orig * scale)), interpolation=cv2.INTER_AREA)
-    image_disp = cv2.cvtColor(image_disp, cv2.COLOR_BGR2RGB) if image_disp.shape[2] == 3 else image_disp
-    # optional contrast equalization
-    if st.sidebar.checkbox("CLAHE (Kontrastverstärkung)", value=True):
-        proc_disp = clahe_rgb(image_disp)
-    else:
-        proc_disp = image_disp.copy()
-
-    hsv_disp = cv2.cvtColor(proc_disp, cv2.COLOR_RGB2HSV)
-    marked = proc_disp.copy()
-
-    # draw existing points
-    def draw_points(img, points, color, r=6):
-        for (x,y) in points:
-            cv2.circle(img, (int(x), int(y)), r, color, -1)
-
-    draw_points(marked, APP["aec_points"], (255,100,100), r=6)      # AEC red
-    draw_points(marked, APP["hema_points"], (100,100,255), r=6)     # Hema blue
-    draw_points(marked, APP["bg_points"], (255,255,0), r=6)         # bg yellow
-    draw_points(marked, APP["manual_aec"], (255,165,0), r=6)
-    draw_points(marked, APP["manual_hema"], (128,0,128), r=6)
-
-    click_key = f"click_img_{APP['last_auto_run']}"
-    coords = streamlit_image_coordinates(Image.fromarray(marked), key=click_key, width=DISPLAY_WIDTH)
-
-    # robust click handling:
-    if coords:
-        cx, cy = int(coords["x"]), int(coords["y"])
-        click_id = (cx, cy)
-        last = APP.get("last_click_id")
-        # only treat as new if different from last processed click
-        if last != click_id:
-            mode = st.sidebar.radio("Modus", ["Keine", "AEC (Kalib.)", "Hämatoxylin (Kalib.)", "Hintergrund (Kalib.)", "AEC manuell", "Hämatoxylin manuell", "Punkt löschen"], index=0)
-            if mode == "Punkt löschen":
-                # remove near points from all lists
-                for k in ["aec_points","hema_points","bg_points","manual_aec","manual_hema"]:
-                    APP[k] = [p for p in APP[k] if not is_near(p, (cx,cy), r=12)]
-                st.info(f"Punkte in der Nähe von ({cx},{cy}) gelöscht.")
-            elif mode == "AEC (Kalib.)":
-                APP["aec_points"].append((cx,cy))
-                st.success(f"AEC Kalibrierungs-Punkt: ({cx},{cy})")
-            elif mode == "Hämatoxylin (Kalib.)":
-                APP["hema_points"].append((cx,cy))
-                st.success(f"Hämatoxylin Kalibrierungs-Punkt: ({cx},{cy})")
-            elif mode == "Hintergrund (Kalib.)":
-                APP["bg_points"].append((cx,cy))
-                st.success(f"Hintergrund-Punkt: ({cx},{cy})")
-            elif mode == "AEC manuell":
-                APP["manual_aec"].append((cx,cy))
-            elif mode == "Hämatoxylin manuell":
-                APP["manual_hema"].append((cx,cy))
-            APP["last_click_id"] = click_id
-    else:
-        # clear last id so a future click with same coords will be accepted
-        APP["last_click_id"] = None
-
-    # dedup
-    for k in ["aec_points","hema_points","bg_points","manual_aec","manual_hema"]:
-        APP[k] = dedup_points(APP[k], min_dist=6)
-
-    st.image(marked, use_column_width=True)
-
-# -------------------- Right: controls --------------------
+    if st.button("⚡ AEC kalibrieren"):
+        if st.session_state.aec_points:
+            st.session_state.aec_hsv = compute_hsv_range(st.session_state.aec_points, hsv_disp)
+            st.session_state.aec_points = []
+            st.success("✅ AEC-Kalibrierung gespeichert.")
+        else:
+            st.warning("Keine Punkte.")
 with col2:
-    st.sidebar.markdown("### Kalibrierung & Parameter")
-    sample_radius = st.sidebar.slider("Kalibrierungs-Probenradius (px)", 1, 20, 5)
-    buffer_h = st.sidebar.slider("Hue-Buffer", 0, 30, 3)
-    buffer_s = st.sidebar.slider("Sättigungs-Buffer", 0, 100, 10)
-    buffer_v = st.sidebar.slider("Value-Buffer", 0, 100, 10)
-    blur_k = st.sidebar.slider("Blur-Kernel (ungerade)", 1, 21, 5)
-    blur_k = ensure_odd(blur_k)
-    min_area = st.sidebar.number_input("Mindestfläche (px)", 10, 5000, 100)
-    alpha = st.sidebar.slider("Alpha (Kontrast)", 0.5, 3.0, 1.0, step=0.1)
-    show_masks = st.sidebar.checkbox("Masken-Vorschau anzeigen", value=True)
-
-    st.sidebar.markdown("### Aktionen")
-    if st.sidebar.button("AEC kalibrieren"):
-        if APP["aec_points"]:
-            APP["aec_hsv"] = compute_hsv_range(APP["aec_points"], hsv_disp, sample_radius=sample_radius, buffer=(buffer_h,buffer_s,buffer_v))
-            cnt = len(APP["aec_points"])
-            APP["aec_points"] = []
-            st.success(f"AEC Kalibrierung aus {cnt} Punkten gespeichert.")
+    if st.button("⚡ Hämatoxylin kalibrieren"):
+        if st.session_state.hema_points:
+            st.session_state.hema_hsv = compute_hsv_range(st.session_state.hema_points, hsv_disp)
+            st.session_state.hema_points = []
+            st.success("✅ Hämatoxylin-Kalibrierung gespeichert.")
         else:
-            st.warning("Keine AEC-Punkte vorhanden.")
-
-    if st.sidebar.button("Hämatoxylin kalibrieren"):
-        if APP["hema_points"]:
-            APP["hema_hsv"] = compute_hsv_range(APP["hema_points"], hsv_disp, sample_radius=sample_radius, buffer=(buffer_h,buffer_s,buffer_v))
-            cnt = len(APP["hema_points"])
-            APP["hema_points"] = []
-            st.success(f"Hämatoxylin Kalibrierung aus {cnt} Punkten gespeichert.")
+            st.warning("Keine Punkte.")
+with col3:
+    if st.button("⚡ Hintergrund kalibrieren"):
+        if st.session_state.bg_points:
+            st.session_state.bg_hsv = compute_hsv_range(st.session_state.bg_points, hsv_disp)
+            st.session_state.bg_points = []
+            st.success("✅ Hintergrund-Kalibrierung gespeichert.")
         else:
-            st.warning("Keine Hämatoxylin-Punkte vorhanden.")
+            st.warning("Keine Punkte.")
 
-    if st.sidebar.button("Hintergrund kalibrieren"):
-        if APP["bg_points"]:
-            APP["bg_hsv"] = compute_hsv_range(APP["bg_points"], hsv_disp, sample_radius=sample_radius, buffer=(buffer_h,buffer_s,buffer_v))
-            cnt = len(APP["bg_points"])
-            APP["bg_points"] = []
-            st.success(f"Hintergrund Kalibrierung aus {cnt} Punkten gespeichert.")
-        else:
-            st.warning("Keine Hintergrund-Punkte vorhanden.")
-
-    st.sidebar.markdown("### Schnellaktionen")
-    if st.sidebar.button("Alle Punkte löschen"):
-        for k in ["aec_points","hema_points","bg_points","manual_aec","manual_hema"]:
-            APP[k] = []
-        st.info("Alle Punkte entfernt.")
-
-    if st.sidebar.button("Kalibrierung zurücksetzen"):
-        APP["aec_hsv"] = None
-        APP["hema_hsv"] = None
-        APP["bg_hsv"] = None
-        st.info("Kalibrierungen zurückgesetzt.")
-
-    if st.sidebar.button("Kalibrierung speichern"):
-        save_calib(APP["aec_hsv"], APP["hema_hsv"], APP["bg_hsv"])
-
-    if st.sidebar.button("Kalibrierung laden"):
-        a,h,b = load_calib()
-        APP["aec_hsv"], APP["hema_hsv"], APP["bg_hsv"] = a,h,b
-
-    if st.sidebar.button("Auto-Erkennung ausführen"):
-        APP["last_auto_run"] = (APP["last_auto_run"] or 0) + 1
-        # no st.rerun(); rely on key change for image widget
-
-# -------------------- Auto-Erkennung --------------------
-# Run detection only when requested
-if APP.get("last_auto_run", 0) and APP["last_auto_run"] > 0:
-    proc = cv2.convertScaleAbs(proc_disp, alpha=alpha, beta=0)
-    if blur_k > 1:
-        proc = cv2.GaussianBlur(proc, (blur_k, blur_k), 0)
+# ==========================================================
+# Auto-Erkennung
+# ==========================================================
+if st.session_state.last_auto_run > 0:
+    proc = cv2.convertScaleAbs(image_disp, alpha=alpha, beta=0)
+    if blur_kernel > 1:
+        proc = cv2.GaussianBlur(proc, (ensure_odd(blur_kernel), ensure_odd(blur_kernel)), 0)
     hsv_proc = cv2.cvtColor(proc, cv2.COLOR_RGB2HSV)
 
-    # prepare masks
-    mask_aec = np.zeros(hsv_proc.shape[:2], dtype=np.uint8)
-    mask_hema = np.zeros(hsv_proc.shape[:2], dtype=np.uint8)
+    aec_detected, hema_detected = [], []
 
-    if APP["aec_hsv"] is not None:
-        hmin,hmax,smin,smax,vmin,vmax = map(int, APP["aec_hsv"])
-        mask_aec = apply_hue_wrap(hsv_proc, hmin,hmax,smin,smax,vmin,vmax)
-    if APP["hema_hsv"] is not None:
-        hmin,hmax,smin,smax,vmin,vmax = map(int, APP["hema_hsv"])
-        mask_hema = apply_hue_wrap(hsv_proc, hmin,hmax,smin,smax,vmin,vmax)
+    if st.session_state.aec_hsv is not None:
+        mask_aec = apply_hue_wrap(hsv_proc, *map(int, st.session_state.aec_hsv))
+    else:
+        mask_aec = np.zeros(hsv_proc.shape[:2], dtype=np.uint8)
 
-    # exclude background if available
-    if APP["bg_hsv"] is not None:
-        hmin,hmax,smin,smax,vmin,vmax = map(int, APP["bg_hsv"])
-        mask_bg = apply_hue_wrap(hsv_proc, hmin,hmax,smin,smax,vmin,vmax)
+    if st.session_state.hema_hsv is not None:
+        mask_hema = apply_hue_wrap(hsv_proc, *map(int, st.session_state.hema_hsv))
+    else:
+        mask_hema = np.zeros(hsv_proc.shape[:2], dtype=np.uint8)
+
+    if st.session_state.bg_hsv is not None:
+        mask_bg = apply_hue_wrap(hsv_proc, *map(int, st.session_state.bg_hsv))
         mask_aec = cv2.bitwise_and(mask_aec, cv2.bitwise_not(mask_bg))
         mask_hema = cv2.bitwise_and(mask_hema, cv2.bitwise_not(mask_bg))
 
-    # morphology to clean
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3))
-    mask_aec = cv2.morphologyEx(mask_aec, cv2.MORPH_OPEN, kernel, iterations=1)
-    mask_aec = cv2.morphologyEx(mask_aec, cv2.MORPH_CLOSE, kernel, iterations=1)
-    mask_hema = cv2.morphologyEx(mask_hema, cv2.MORPH_OPEN, kernel, iterations=1)
-    mask_hema = cv2.morphologyEx(mask_hema, cv2.MORPH_CLOSE, kernel, iterations=1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    mask_aec = cv2.morphologyEx(mask_aec, cv2.MORPH_OPEN, kernel)
+    mask_hema = cv2.morphologyEx(mask_hema, cv2.MORPH_OPEN, kernel)
 
-    # get centers
-    aec_centers = get_centers(mask_aec, min_area)
-    hema_centers = get_centers(mask_hema, min_area)
+    aec_detected = get_centers(mask_aec, int(min_area))
+    hema_detected = get_centers(mask_hema, int(min_area))
 
-    # remove centers near manual bg points to reduce artifacts
-    if APP["bg_points"]:
-        aec_centers = [p for p in aec_centers if not any(is_near(p, q, r=12) for q in APP["bg_points"])]
-        hema_centers = [p for p in hema_centers if not any(is_near(p, q, r=12) for q in APP["bg_points"])]
+    if st.session_state.bg_points:
+        aec_detected = remove_near(aec_detected, st.session_state.bg_points, r=max(6, circle_radius))
+        hema_detected = remove_near(hema_detected, st.session_state.bg_points, r=max(6, circle_radius))
 
-    # merge with manual points (manual have priority)
-    merged_aec = APP["manual_aec"].copy()
-    for p in aec_centers:
-        if not any(is_near(p, q, r=10) for q in merged_aec):
+    merged_aec = list(st.session_state.manual_aec)
+    for p in aec_detected:
+        if not any(is_near(p, q, r=max(6, circle_radius)) for q in merged_aec):
             merged_aec.append(p)
-    merged_hema = APP["manual_hema"].copy()
-    for p in hema_centers:
-        if not any(is_near(p, q, r=10) for q in merged_hema):
+    merged_hema = list(st.session_state.manual_hema)
+    for p in hema_detected:
+        if not any(is_near(p, q, r=max(6, circle_radius)) for q in merged_hema):
             merged_hema.append(p)
 
-    # dedup and store as display coords
-    APP["aec_points"] = dedup_points(merged_aec, min_dist=6)
-    APP["hema_points"] = dedup_points(merged_hema, min_dist=6)
+    st.session_state.aec_points = dedup_points(merged_aec)
+    st.session_state.hema_points = dedup_points(merged_hema)
+    st.session_state.last_auto_run = 0
 
-    # show mask previews if requested
-    if show_masks:
-        st.markdown("### Masken-Vorschau")
-        colA, colB = st.columns(2)
-        with colA:
-            st.image(mask_aec, caption=f"AEC Mask (detected: {len(APP['aec_points'])})", use_column_width=True)
-        with colB:
-            st.image(mask_hema, caption=f"Hämatoxylin Mask (detected: {len(APP['hema_points'])})", use_column_width=True)
+# ==========================================================
+# Ergebnisse & Export
+# ==========================================================
+all_aec = st.session_state.aec_points or []
+all_hema = st.session_state.hema_points or []
 
-# -------------------- Summary & CSV Export --------------------
-all_aec = APP["aec_points"] or []
-all_hema = APP["hema_points"] or []
-
-st.markdown(f"### Ergebnis: AEC={len(all_aec)}, Hämatoxylin={len(all_hema)} (manuell AEC={len(APP['manual_aec'])}, manuell Hema={len(APP['manual_hema'])})")
-
-if all_aec or all_hema:
-    df_rows = []
-    for x,y in all_aec:
-        df_rows.append({"X_display": int(x), "Y_display": int(y), "Type":"AEC"})
-    for x,y in all_hema:
-        df_rows.append({"X_display": int(x), "Y_display": int(y), "Type":"Hämatoxylin"})
-    df = pd.DataFrame(df_rows)
-    # convert to original coords
-    df["X_original"] = (df["X_display"] / scale).round().astype("Int64")
-    df["Y_original"] = (df["Y_display"] / scale).round().astype("Int64")
-    csv = df.to_csv(index=False).encode("utf-8")
-    st.download_button("CSV exportieren", data=csv, file_name="zellkerne_robust.csv", mime="text/csv")
-
-# -------------------- Debug (optional) --------------------
-with st.expander("🔧 Debug Info"):
-    st.write({
-        "aec_hsv": APP["aec_hsv"],
-        "hema_hsv": APP["hema_hsv"],
-        "bg_hsv": APP["bg_hsv"],
-        "aec_points_count": len(APP["aec_points"]),
-        "hema_points_count": len(APP["hema_points"]),
-        "manual_aec": APP["manual_aec"],
-        "manual_hema": APP["manual_hema"],
-        "bg_points": APP["bg_points"],
-        "last_auto_run": APP["last_auto_run"],
-        "last_file": APP["last_file"],
-    })
+st
